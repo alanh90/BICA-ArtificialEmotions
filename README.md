@@ -1,4 +1,10 @@
-# Artificial Emotion Framework (AEF): Designing Affect for Intelligent Systems
+# Artificial Emotion Framework (AEF)
+
+*Designing Affect for Intelligent Systems*
+
+![GitHub commit activity](https://img.shields.io/github/commit-activity/m/alanh90/BICA-ArtificialEmotions)
+![GitHub last commit](https://img.shields.io/github/last-commit/alanh90/BICA-ArtificialEmotions)
+![GitHub License](https://img.shields.io/github/license/alanh90/BICA-ArtificialEmotions)
 
 <div align="center"><img src="media/artificial_emotions.png" alt="Hungry Matrix Cover"></div>
 
