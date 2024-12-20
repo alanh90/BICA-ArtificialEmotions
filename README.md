@@ -1,6 +1,6 @@
 # Artificial Emotion Framework (AEF): Designing Affect for Intelligent Systems
 
-<div align="center"><img src="media/artificial_emotions.png" alt="Artificial Emotions Concept" width="400"></div>
+<div align="center"><img src="media/artificial_emotions.png" alt="Hungry Matrix Cover"></div>
 
 ## Abstract
 
