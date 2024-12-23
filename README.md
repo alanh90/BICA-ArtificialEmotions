@@ -1,6 +1,6 @@
 # Artificial Emotion Framework (AEF)
 
-*Designing Affect for Intelligent Systems*
+*A potential integral component of the Bicameral AGI Project: Designing Affect for Intelligent Systems*
 
 ![GitHub commit activity](https://img.shields.io/github/commit-activity/m/alanh90/BICA-ArtificialEmotions)
 ![GitHub last commit](https://img.shields.io/github/last-commit/alanh90/BICA-ArtificialEmotions)
