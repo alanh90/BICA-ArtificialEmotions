@@ -19,6 +19,7 @@ class EmotionalDimensionExtractor:
         # Store extracted dimensions
         self.emotional_subspace = None
         self.emotion_vectors = None
+        self.pca = None  # Initialize PCA attribute
 
         # Configure logging
         logging.basicConfig(level=logging.INFO)
@@ -26,7 +27,6 @@ class EmotionalDimensionExtractor:
 
     def generate_emotional_probes(self) -> List[Dict[str, List[str]]]:
         """Generate structured probe sentences for emotional analysis"""
-
         emotion_probes = {
             "joy": [
                 "I feel extremely happy because",
@@ -71,15 +71,14 @@ class EmotionalDimensionExtractor:
                 "I am evaluating",
             ]
         }
-
         return emotion_probes
 
     def get_activation_patterns(
-            self,
-            text: str,
-            layer_indices: Optional[List[int]] = None
+        self,
+        text: str,
+        layer_indices: Optional[List[int]] = None
     ) -> torch.Tensor:
-        """Extract activation patterns from specific layers for a given input"""
+        """Extract activation patterns from specific layers for a given input."""
 
         # Tokenize input
         inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
@@ -90,15 +89,13 @@ class EmotionalDimensionExtractor:
 
         activations = []
 
-        # Get model activations with gradient tracking
+        # Get model activations (no grad needed for analysis)
         with torch.no_grad():
             outputs = self.model(
                 **inputs,
                 output_hidden_states=True,
                 output_attentions=True
             )
-
-            # Extract hidden states from specified layers
             hidden_states = outputs.hidden_states
             for layer_idx in layer_indices:
                 layer_activations = hidden_states[layer_idx]
@@ -111,10 +108,17 @@ class EmotionalDimensionExtractor:
         return combined_activation
 
     def extract_emotional_subspace(
-            self,
-            n_components: int = 7  # One per basic emotion
+        self,
+        n_components: int = 7  # one PCA component per basic emotion
     ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
-        """Extract principal emotional dimensions and emotion vectors"""
+        """
+        Extract principal emotional dimensions and emotion vectors
+        by running PCA on the hidden-state activations of various
+        emotion-specific probes.
+        """
+        # Set print precision for debugging (optional)
+        torch.set_printoptions(precision=8)
+        np.set_printoptions(precision=8, suppress=True)
 
         self.logger.info("Extracting emotional subspace...")
 
@@ -138,6 +142,7 @@ class EmotionalDimensionExtractor:
         # Perform PCA to find principal emotional dimensions
         pca = PCA(n_components=n_components)
         emotional_subspace = pca.fit_transform(activation_matrix)
+        self.pca = pca  # <-- IMPORTANT: store the fitted PCA object
 
         # Calculate average emotion vectors in the reduced space
         emotion_vectors = {}
@@ -153,48 +158,56 @@ class EmotionalDimensionExtractor:
         return emotional_subspace, emotion_vectors
 
     def analyze_text_emotions(self, text: str) -> Dict[str, float]:
-        """Analyze emotional content of input text"""
-
-        if self.emotional_subspace is None:
+        """Analyze emotional content of input text."""
+        if self.emotional_subspace is None or self.pca is None:
             self.extract_emotional_subspace()
 
         # Get activation pattern for input text
         activation = self.get_activation_patterns(text)
 
-        # Project into emotional subspace
-        text_emotions = activation.cpu().numpy()
-        projected_emotions = PCA().fit_transform(text_emotions)
+        # Project into original dimension space
+        text_emotions = activation.cpu().numpy().reshape(1, -1)
 
-        # Calculate similarity with emotion vectors
+        self.logger.info(f"Analyzing text shape: {text_emotions.shape}")
+
+        # Use the same PCA transformation as during extraction
+        projected_emotions = self.pca.transform(text_emotions)[0]
+        self.logger.info(f"Projected emotions shape: {projected_emotions.shape}")
+
+        # Calculate similarity with each stored emotion vector
         emotion_scores = {}
         for emotion, vector in self.emotion_vectors.items():
-            similarity = np.dot(projected_emotions, vector) / (
-                    np.linalg.norm(projected_emotions) * np.linalg.norm(vector)
-            )
-            emotion_scores[emotion] = float(similarity)
+            # Ensure vectors are normalized before dot product
+            proj_norm = np.linalg.norm(projected_emotions)
+            vec_norm = np.linalg.norm(vector)
 
-        # Normalize scores
-        total = sum(abs(score) for score in emotion_scores.values())
-        if total > 0:
-            emotion_scores = {
-                k: (v / total + 1) / 2 for k, v in emotion_scores.items()
-            }
+            if proj_norm > 0 and vec_norm > 0:
+                similarity = np.dot(projected_emotions, vector) / (proj_norm * vec_norm)
+                # Scale to [0, 1] range
+                similarity = (similarity + 1) / 2
+            else:
+                # Default to neutral if norms are zero
+                similarity = 0.5
+
+            emotion_scores[emotion] = float(similarity)
 
         return emotion_scores
 
     def generate_emotional_response(
-            self,
-            prompt: str,
-            target_emotions: Dict[str, float],
-            temperature: float = 0.7
+        self,
+        prompt: str,
+        target_emotions: Dict[str, float],
+        temperature: float = 0.7
     ) -> str:
-        """Generate response with specified emotional qualities"""
-
+        """
+        Generate a response that attempts to embody the specified emotional
+        qualities in `target_emotions`.
+        """
         # Create emotional context
         emotion_prompt = "Respond with "
         emotion_descriptors = []
         for emotion, intensity in target_emotions.items():
-            if intensity > 0.1:  # Threshold for relevance
+            if intensity > 0.1:  # threshold for relevance
                 emotion_descriptors.append(f"{emotion} ({intensity:.2f})")
 
         if emotion_descriptors:
@@ -204,8 +217,6 @@ class EmotionalDimensionExtractor:
 
         # Combine prompts
         full_prompt = f"{emotion_prompt}\nPrompt: {prompt}\nResponse:"
-
-        # Generate response
         inputs = self.tokenizer(full_prompt, return_tensors="pt").to(self.device)
 
         with torch.no_grad():
@@ -223,7 +234,6 @@ class EmotionalDimensionExtractor:
 
         # Verify emotional content
         response_emotions = self.analyze_text_emotions(response)
-
         self.logger.info("Response emotion analysis:")
         for emotion, score in response_emotions.items():
             self.logger.info(f"{emotion}: {score:.2f}")
@@ -231,12 +241,15 @@ class EmotionalDimensionExtractor:
         return response
 
     def create_emotion_lora_config(
-            self,
-            rank: int = 8,
-            alpha: float = 32.0
+        self,
+        rank: int = 8,
+        alpha: float = 32.0
     ) -> Dict:
-        """Create LoRA configuration for emotional fine-tuning"""
-
+        """
+        Create a LoRA configuration that can be used for emotional fine-tuning.
+        The idea is to use the principal emotional subspace to guide
+        weight updates in the LoRA modules.
+        """
         if self.emotional_subspace is None:
             self.extract_emotional_subspace()
 
@@ -252,7 +265,6 @@ class EmotionalDimensionExtractor:
                 "out_proj"
             ]
         }
-
         return config
 
 
@@ -260,15 +272,14 @@ class EmotionalLoRALayer(nn.Module):
     """LoRA layer for emotional control"""
 
     def __init__(
-            self,
-            in_features: int,
-            out_features: int,
-            rank: int,
-            alpha: float,
-            emotion_vectors: Dict[str, np.ndarray]
+        self,
+        in_features: int,
+        out_features: int,
+        rank: int,
+        alpha: float,
+        emotion_vectors: Dict[str, np.ndarray]
     ):
         super().__init__()
-
         self.rank = rank
         self.alpha = alpha
         self.emotion_vectors = emotion_vectors
@@ -283,16 +294,16 @@ class EmotionalLoRALayer(nn.Module):
         )
 
     def forward(
-            self,
-            x: torch.Tensor,
-            emotion_intensities: Dict[str, float]
+        self,
+        x: torch.Tensor,
+        emotion_intensities: Dict[str, float]
     ) -> torch.Tensor:
-        """Forward pass with emotional modulation"""
-
+        """Forward pass with emotional modulation."""
         # Create emotion intensity tensor
         emotions = list(self.emotion_vectors.keys())
         intensity_vector = torch.tensor(
-            [emotion_intensities.get(e, 0.0) for e in emotions]
+            [emotion_intensities.get(e, 0.0) for e in emotions],
+            dtype=x.dtype, device=x.device
         )
 
         # Mix emotions
@@ -300,19 +311,70 @@ class EmotionalLoRALayer(nn.Module):
 
         # Apply LoRA with emotional modulation
         lora_mid = torch.matmul(x, self.lora_A)
-        lora_mid = lora_mid * emotion_mix
+        lora_mid = lora_mid * emotion_mix  # elementwise scaling
         lora_output = torch.matmul(lora_mid, self.lora_B)
 
         return (self.alpha / self.rank) * lora_output
 
 
-def main():
-    """Test the emotional dimension extraction system"""
+def visualize_emotional_space(subspace, vectors, emotion_labels):
+    """Visualize the emotional subspace using PCA components."""
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
+    # Create 3D plot of first three components
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')
+
+    # Plot each emotion cluster
+    for emotion in set(emotion_labels):
+        indices = [i for i, e in enumerate(emotion_labels) if e == emotion]
+        points = subspace[indices]
+        ax.scatter(
+            points[:, 0],
+            points[:, 1],
+            points[:, 2],
+            label=emotion,
+            alpha=0.6
+        )
+
+    # Plot emotion vectors
+    for emotion, vector in vectors.items():
+        ax.quiver(
+            0, 0, 0,
+            vector[0], vector[1], vector[2],
+            color='black',
+            alpha=0.5
+        )
+
+    ax.set_xlabel('PC1')
+    ax.set_ylabel('PC2')
+    ax.set_zlabel('PC3')
+    ax.legend()
+    plt.title('Emotional Subspace (First 3 Principal Components)')
+    plt.show()
+
+
+def main():
+    """Test the emotional dimension extraction system."""
     extractor = EmotionalDimensionExtractor()
+    logging.info("Initialized EmotionalDimensionExtractor")
 
     # Extract emotional dimensions
     subspace, vectors = extractor.extract_emotional_subspace()
+    logging.info(f"\nExtracted subspace shape: {subspace.shape}")
+    logging.info(f"Number of emotion vectors: {len(vectors)}")
+
+    # Visualize the emotional space
+    emotion_labels = []
+    for emotion, probes in extractor.generate_emotional_probes().items():
+        emotion_labels.extend([emotion] * len(probes))
+
+    try:
+        visualize_emotional_space(subspace, vectors, emotion_labels)
+        logging.info("Successfully visualized emotional space")
+    except Exception as e:
+        logging.error(f"Failed to visualize emotional space: {e}")
 
     # Test some example texts
     test_texts = [
@@ -321,6 +383,19 @@ def main():
         "The weather is quite pleasant today.",
         "That driver just cut me off!",
     ]
+
+    logging.info("\nAnalyzing test texts:")
+    for text in test_texts:
+        logging.info(f"\nAnalyzing: {text}")
+        try:
+            emotions = extractor.analyze_text_emotions(text)
+            logging.info("Emotion analysis successful")
+            logging.info("Results:")
+            for emotion, score in emotions.items():
+                logging.info(f"{emotion}: {score:.3f}")
+        except Exception as e:
+            logging.error(f"Error analyzing text: {e}")
+            raise
 
     for text in test_texts:
         print(f"\nAnalyzing: {text}")
