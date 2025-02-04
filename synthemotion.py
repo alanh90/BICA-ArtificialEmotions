@@ -112,7 +112,7 @@ def generate_sample(word_list):
     prompt = build_generation_prompt(word_list)
     try:
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",  # Use your preferred model; adjust as needed
+            model="gemma2-9b-it",  # Use your preferred model; adjust as needed
             messages=[
                 {"role": "system", "content": "You are an AI that generates high-quality synthetic training data for emotion-aware conversations."},
                 {"role": "user", "content": prompt}
@@ -160,7 +160,7 @@ def save_to_jsonl(samples, output_file):
 # -------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate synthetic training data for emotion-aware AI.")
-    parser.add_argument("--num_samples", type=int, default=10, help="Number of samples to generate.")
+    parser.add_argument("--num_samples", type=int, default=500, help="Number of samples to generate.")
     parser.add_argument("--output", type=str, default=OUTPUT_FILE, help="Output JSONL file.")
     args = parser.parse_args()
 
