@@ -4,6 +4,7 @@ import json
 import random
 import argparse
 import time
+import urllib.request
 from dotenv import load_dotenv
 from groq import Groq
 
@@ -19,47 +20,88 @@ client = Groq(api_key=GROQ_API_KEY)
 
 # File where synthetic data will be saved
 OUTPUT_FILE = "synthetic_emotion_data.jsonl"
+DICTIONARY_FILE = "english_words.txt"  # Local dictionary file
 
-# List of possible random topics
-TOPIC_LIST = [
-    "sunrise", "car", "toys", "hobby", "helping", "greeting", "saying goodbye",
-    "saying something emotional", "assist", "talk", "storytelling", "questioning",
-    "fighting", "interested", "ocean", "forest", "city", "mountain", "river",
-    "rainbow", "desert", "flower", "star", "empathy"
-]
 
-# Function to choose a random word
-def get_random_word():
-    return random.choice(TOPIC_LIST)
-
-# Function to randomly decide whether to generate a single message or a short back-and-forth
-def generate_conversation():
+# -------------------------------
+# 🔹 Function: Load or Download a Dictionary
+# -------------------------------
+def load_or_download_dictionary():
     """
-    Randomly decide between a single user input or a short back-and-forth conversation.
+    Loads a dictionary from a local file or downloads one if missing.
+    Returns a list of English words.
     """
-    if random.random() < 0.5:  # 50% chance for a short conversation history
-        return f"User: {random.choice(TOPIC_LIST)} is amazing! What do you think?\nAI: That's an interesting perspective! I believe {random.choice(TOPIC_LIST)} has a fascinating history.\nUser: Yeah! I've always wanted to learn more.\nAI:"
+    if not os.path.exists(DICTIONARY_FILE):
+        print("🔹 Dictionary not found. Downloading...")
+        try:
+            # Download a word list from an online source
+            url = "https://raw.githubusercontent.com/dwyl/english-words/master/words.txt"
+            urllib.request.urlretrieve(url, DICTIONARY_FILE)
+            print(f"✅ Dictionary downloaded and saved to {DICTIONARY_FILE}")
+        except Exception as e:
+            print(f"❌ Error downloading dictionary: {e}")
+            return ["emotion", "happiness", "fear", "trust", "storytelling"]  # Fallback words
+
+    # Load words from the dictionary file
+    with open(DICTIONARY_FILE, "r") as f:
+        words = [word.strip() for word in f.readlines() if word.strip().isalpha()]
+
+    if not words:
+        print("❌ Dictionary file is empty or corrupted. Using fallback words.")
+        return ["emotion", "happiness", "fear", "trust", "storytelling"]
+
+    return words
+
+
+# -------------------------------
+# 🔹 Function: Get a Random Word
+# -------------------------------
+def get_random_word(word_list):
+    """Selects a random word from the dictionary."""
+    return random.choice(word_list)
+
+
+# -------------------------------
+# 🔹 Function: Generate Conversation Prompt
+# -------------------------------
+def generate_conversation(word_list):
+    """
+    Randomly generates:
+    - Either a single user input
+    - Or a short back-and-forth conversation.
+    """
+    random_word = get_random_word(word_list)
+
+    if random.random() < 0.5:  # 50% chance for short conversation history
+        return (
+            f"User: I've been thinking a lot about {random_word}. What do you think?\n"
+            f"AI: {random_word} is quite fascinating! There's a lot to explore about it.\n"
+            f"User: Yeah! I've always wanted to learn more.\n"
+            f"AI:"
+        )
     else:
-        return f"User: {random.choice(TOPIC_LIST)} makes me feel emotional.\nAI:"
+        return f"User: {random_word} makes me feel something deep inside.\nAI:"
 
-# Function to build a structured prompt for Groq API
-def build_generation_prompt():
+
+# -------------------------------
+# 🔹 Function: Build Generation Prompt
+# -------------------------------
+def build_generation_prompt(word_list):
     """
     Creates a structured prompt ensuring:
-    - 'prompt' includes the user input and optionally conversation history.
-    - 'response' contains only the AI's reply.
+    - 'prompt' includes either a single user input or conversation history.
+    - 'response' contains **only** the AI's reply.
     - 'added_context' provides background from the AI's perspective before responding.
-    - 'emotion_vector' represents the AI's emotional state.
+    - 'emotion_vector' represents the AI's emotions with values between 0 and 1.
     """
-    conversation_prompt = generate_conversation()
+    conversation_prompt = generate_conversation(word_list)
 
     prompt = (
         f"Generate a synthetic training sample for an **emotion-aware AI**. "
         f"The conversation should feel **natural** and reflect a topic.\n"
-        "- 'prompt' includes the user input (and optionally conversation history).\n"
+        "- 'prompt' includes the user input (and optionally conversation history). Sometimes its just the user, other times it will be a short snippet of conversation history.\n"
         "- 'response' contains **only** the AI's reply (no user input included).\n"
-        "- 'added_context' provides background from the AI's perspective before responding. "
-        "This can be thoughts, memories, or related knowledge.\n"
+        "- 'added_context' provides background from the AI's perspective before responding. Could be past related memories, could be thoughts, could be something random that popped in its head before responding.\n"
         "- 'emotion_vector' represents the AI's emotions with **values between 0 and 1**.\n\n"
         "**Example format:**\n"
         "```json\n"
@@ -75,12 +117,15 @@ def build_generation_prompt():
     )
     return prompt
 
-# Function to query Groq API and generate synthetic data
-def generate_sample():
-    prompt = build_generation_prompt()
+
+# -------------------------------
+# 🔹 Function: Generate a Sample Using Groq API
+# -------------------------------
+def generate_sample(word_list):
+    prompt = build_generation_prompt(word_list)
     try:
         response = client.chat.completions.create(
-            model="llama3-8b-8192",  # Adjust if needed
+            model="llama3-8b-8192",
             messages=[
                 {"role": "system", "content": "You are an AI that generates high-quality synthetic training data."},
                 {"role": "user", "content": prompt}
@@ -97,30 +142,41 @@ def generate_sample():
         print(f"❌ Error generating sample: {e}")
         return None
 
-# Main function to generate synthetic data
-def generate_synthetic_data(num_samples):
+
+# -------------------------------
+# 🔹 Function: Generate Multiple Samples
+# -------------------------------
+def generate_synthetic_data(num_samples, word_list):
     samples = []
     for i in range(num_samples):
-        print(f"🔹 [{i+1}/{num_samples}] Generating sample...")
-        sample = generate_sample()
+        print(f"🔹 [{i + 1}/{num_samples}] Generating sample...")
+        sample = generate_sample(word_list)
         if sample is not None:
             samples.append(sample)
         # Sleep to avoid rate limits
         time.sleep(1)
     return samples
 
-# Save the samples to a JSONL file
+
+# -------------------------------
+# 🔹 Function: Save Samples to JSONL
+# -------------------------------
 def save_to_jsonl(samples, output_file):
     with open(output_file, "w") as f:
         for sample in samples:
             f.write(json.dumps(sample) + "\n")
 
+
+# -------------------------------
+# 🔹 Main Execution
+# -------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate synthetic training data for emotion-aware AI.")
     parser.add_argument("--num_samples", type=int, default=5, help="Number of samples to generate.")
     parser.add_argument("--output", type=str, default=OUTPUT_FILE, help="Output JSONL file.")
     args = parser.parse_args()
 
-    synthetic_samples = generate_synthetic_data(args.num_samples)
+    word_list = load_or_download_dictionary()
+    synthetic_samples = generate_synthetic_data(args.num_samples, word_list)
     save_to_jsonl(synthetic_samples, args.output)
     print(f"✅ Generated {len(synthetic_samples)} samples and saved to {args.output}")
