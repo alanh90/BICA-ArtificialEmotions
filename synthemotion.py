@@ -22,6 +22,7 @@ client = Groq(api_key=GROQ_API_KEY)
 OUTPUT_FILE = "synthetic_emotion_data.jsonl"
 DICTIONARY_FILE = "english_words.txt"  # Local dictionary file
 
+
 # -------------------------------
 # Function: Load or Download a Dictionary
 # -------------------------------
@@ -44,47 +45,53 @@ def load_or_download_dictionary():
         words = [word.strip() for word in f.readlines() if word.strip().isalpha()]
     return words if words else ["emotion", "happiness", "fear", "trust", "storytelling"]
 
+
 # -------------------------------
 # Function: Get a Random Word for Topic Influence
 # -------------------------------
 def generate_conversation_topic(word_list):
-    """Selects a random word from the dictionary to influence the conversation topic."""
+    """Selects a random word from the dictionary to serve as the topic influence."""
     return random.choice(word_list)
+
 
 # -------------------------------
 # Function: Build Generation Prompt
 # -------------------------------
 def build_generation_prompt(word_list):
     """
-    Builds a prompt that instructs the AI to generate a synthetic training sample.
-    The random word (topic) is used as an influence for the conversation.
-    The prompt instructs the AI to output valid JSON strictly, with the following fields:
-      - prompt: The conversation prompt (user input or conversation history).
-      - added_context: Background from the AI's perspective (thoughts, memories, or additional cues).
-      - response: The AI's reply only.
-      - emotion_vector: A dictionary with emotion keys and values between 0 and 1.
+    Builds a prompt for Groq's API that instructs the AI to generate a synthetic training sample.
+    The random word is used solely as an influence for the topic.
+    The output JSON object must include:
+      - "prompt": A conversation prompt (which may be a single user message or include a short conversation history), starting with "User:".
+      - "added_context": Background from the AI's perspective (thoughts, memories, or extra influences).
+      - "response": Only the AI's reply.
+      - "emotion_vector": A dictionary with keys "joy", "trust", "fear", "surprise", "sadness", "disgust", "anger", "anticipation" (values between 0 and 1).
+    The instructions ask the AI to incorporate the topic naturally, but do not force a fixed sentence.
     """
     topic = generate_conversation_topic(word_list)
     prompt = (
         f"Generate a synthetic training sample for an emotion-aware AI conversation. "
-        f"Use the following topic as inspiration: **'{topic}'**. "
-        "The output must be strictly in JSON format with no extra text. "
-        "Ensure the JSON object includes the following fields:\n\n"
+        f"Use the following topic as inspiration: '{topic}'. "
+        "The sample should be generated entirely in valid JSON format with no extra text. "
+        "The JSON object must contain the following fields:\n\n"
         "{\n"
-        '  "prompt": "User: [User input or conversation history]\\nAI:",\n'
-        '  "added_context": "[Context from AI\'s perspective]",\n'
+        '  "prompt": "User: [Conversation history of user and AI going back and forth or single user message. Make sure the last part of this section is the user talking]\\nAI:",\n'
+        '  "added_context": "[Extra context from the AI\'s perspective, such as memories, random thoughts that may be related, or internal thoughts]",\n'
         '  "response": "[AI response only]",\n'
         '  "emotion_vector": { "joy": [0-1], "trust": [0-1], "fear": [0-1], "surprise": [0-1], "sadness": [0-1], "disgust": [0-1], "anger": [0-1], "anticipation": [0-1] }\n'
         "}\n\n"
-        f"Incorporate the topic '{topic}' naturally into the conversation."
+        "Ensure the 'prompt' field always starts with 'User:' and the 'response' field contains only the AI's reply. "
+        "Incorporate the topic naturally into the conversation without forcing a pre-determined sentence. "
+        "Output strictly the JSON object with no additional commentary."
     )
     return prompt
+
 
 # -------------------------------
 # Function: Extract Strict JSON from API Response
 # -------------------------------
 def extract_json(response_text):
-    """Extracts the first valid JSON object from a string."""
+    """Extracts the first valid JSON object from the API response string."""
     try:
         json_start = response_text.find("{")
         json_end = response_text.rfind("}") + 1
@@ -97,6 +104,7 @@ def extract_json(response_text):
         print(f"❌ JSON parsing error: {e}")
         return None
 
+
 # -------------------------------
 # Function: Generate a Sample Using Groq API
 # -------------------------------
@@ -104,9 +112,9 @@ def generate_sample(word_list):
     prompt = build_generation_prompt(word_list)
     try:
         response = client.chat.completions.create(
-            model="llama3-8b-8192",  # Adjust as needed
+            model="llama-3.3-70b-specdec",  # Use your preferred model; adjust as needed
             messages=[
-                {"role": "system", "content": "You are an AI that generates high-quality synthetic training data."},
+                {"role": "system", "content": "You are an AI that generates high-quality synthetic training data for emotion-aware conversations."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.8,
@@ -123,6 +131,7 @@ def generate_sample(word_list):
         print(f"❌ Error generating sample: {e}")
         return None
 
+
 # -------------------------------
 # Function: Generate Multiple Samples
 # -------------------------------
@@ -136,6 +145,7 @@ def generate_synthetic_data(num_samples, word_list):
         time.sleep(1)  # Avoid rate limits
     return samples
 
+
 # -------------------------------
 # Function: Save Samples to JSONL
 # -------------------------------
@@ -144,12 +154,13 @@ def save_to_jsonl(samples, output_file):
         for sample in samples:
             f.write(json.dumps(sample) + "\n")
 
+
 # -------------------------------
 # Main Execution
 # -------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate synthetic training data for emotion-aware AI.")
-    parser.add_argument("--num_samples", type=int, default=20, help="Number of samples to generate.")
+    parser.add_argument("--num_samples", type=int, default=10, help="Number of samples to generate.")
     parser.add_argument("--output", type=str, default=OUTPUT_FILE, help="Output JSONL file.")
     args = parser.parse_args()
 
