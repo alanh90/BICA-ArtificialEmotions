@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# emotion_aware_gptneo.py
+# emotion_aware_gpt2.py
 
 import torch
 import torch.nn as nn
@@ -7,10 +7,8 @@ import torch.nn.functional as F
 import numpy as np
 import time
 
-from transformers import AutoTokenizer, GPTNeoForCausalLM, GPTNeoConfig
-# Import GPTNeoAttention from the GPT-Neo model implementation
-# (This import path may change with versions; adjust if necessary.)
-from transformers.models.gpt_neo.modeling_gpt_neo import GPTNeoAttention
+from transformers import GPT2LMHeadModel, GPT2Config, AutoTokenizer
+from transformers.models.gpt2.modeling_gpt2 import GPT2Attention
 
 # ------------------------------
 # 0. Setup and Global Variables
@@ -72,10 +70,6 @@ class EmotionStateUpdater(nn.Module):
 # 3. Emotion Attention Adapter (LoRA-like)
 # ------------------------------
 class EmotionAttentionAdapter(nn.Module):
-    """
-    Projects the emotion vector into a bias for each attention head.
-    """
-
     def __init__(self, emotion_dim, num_heads, head_dim, adapter_dim=32):
         super().__init__()
         self.down_proj = nn.Linear(emotion_dim, num_heads * adapter_dim)
@@ -85,19 +79,23 @@ class EmotionAttentionAdapter(nn.Module):
 
     def forward(self, emotion_vector):
         # emotion_vector: (batch, emotion_dim)
-        x = self.down_proj(emotion_vector)  # shape: (batch, num_heads * adapter_dim)
+        x = self.down_proj(emotion_vector)   # shape: (batch, num_heads * adapter_dim)
         x = self.activation(x)
-        x = x.view(-1, self.num_heads, -1)  # (batch, num_heads, adapter_dim)
-        bias = self.up_proj(x)  # (batch, num_heads, head_dim)
+        # Instead of x.view(-1, self.num_heads, -1), do:
+        x = x.view(x.size(0), self.num_heads, -1)  # shape: (batch, num_heads, adapter_dim)
+        bias = self.up_proj(x)                     # shape: (batch, num_heads, head_dim)
         return bias
 
 
+
 # ------------------------------
-# 4. Custom Attention with Emotion Injection for GPT-Neo
+# 4. Custom Attention with Emotion Injection for GPT-2
 # ------------------------------
-class EmotionAwareGPTNeoAttention(GPTNeoAttention):
+class EmotionAwareGPT2Attention(GPT2Attention):
     """
-    Subclass GPTNeoAttention to inject an emotion-derived bias into the attention logits.
+    Subclass GPT2Attention to inject an emotion-derived bias into the attention logits.
+    For GPT-2, the projection for query, key, and value is done by a single linear layer (self.c_attn),
+    which we split into three parts.
     """
 
     def __init__(self, config, emotion_adapter, global_emotion_state):
@@ -106,53 +104,91 @@ class EmotionAwareGPTNeoAttention(GPTNeoAttention):
         # global_emotion_state: a tensor (batch, emotion_dim); updated externally.
         self.global_emotion_state = global_emotion_state
 
-    def forward(self, hidden_states, layer_past=None, attention_mask=None, head_mask=None, use_cache=False, output_attentions=False):
-        # Follow GPT-Neo attention: compute query, key, value
-        # The original GPT-Neo attention module computes these via its internal linear layers.
-        # For simplicity, we call the parent method to get the initial attention logits.
-        # However, we then inject our emotion bias.
+    def _split_heads(self, tensor, num_heads, head_dim):
+        # Helper function: reshape tensor from (batch, seq_len, num_heads*head_dim)
+        # to (batch, num_heads, seq_len, head_dim)
+        new_shape = tensor.size()[:-1] + (num_heads, head_dim)
+        tensor = tensor.view(*new_shape)
+        return tensor.permute(0, 2, 1, 3)
 
-        # Compute query, key, value using GPT-Neo internals
-        # (This is based on GPTNeoAttention implementation; adjust if necessary.)
-        query = self.query(hidden_states)  # shape: (batch, seq_len, num_heads * head_dim)
-        key = self.key(hidden_states)
-        value = self.value(hidden_states)
-        query = self._split_heads(query, self.num_heads, self.head_dim)  # (batch, num_heads, seq_len, head_dim)
-        key = self._split_heads(key, self.num_heads, self.head_dim)
+    def _merge_heads(self, tensor, num_heads, head_dim):
+        # Helper function: inverse of _split_heads.
+        tensor = tensor.permute(0, 2, 1, 3).contiguous()
+        new_shape = tensor.size()[:-2] + (num_heads * head_dim,)
+        return tensor.view(*new_shape)
+
+    def forward(
+        self,
+        hidden_states,
+        layer_past=None,
+        attention_mask=None,
+        head_mask=None,
+        use_cache=False,
+        output_attentions=False,
+        **kwargs
+    ):
+        # GPT-2: combined Q,K,V in self.c_attn
+        x = self.c_attn(hidden_states)  # (batch, seq_len, 3*hidden_dim)
+        query, key, value = x.split(self.split_size, dim=2)
+
+        # If we have a past layer, use it for the key/value
+        if layer_past is not None:
+            past_key, past_value = layer_past
+            key = torch.cat([past_key, key], dim=-2)
+            value = torch.cat([past_value, value], dim=-2)
+
+        # Split heads -> (batch, num_heads, seq_len, head_dim)
+        query = self._split_heads(query, self.num_heads, self.head_dim)
+        key   = self._split_heads(key,   self.num_heads, self.head_dim)
         value = self._split_heads(value, self.num_heads, self.head_dim)
 
-        # Standard scaled dot-product attention logits
+        # Compute present for caching
+        present = (key, value) if use_cache else None
+
+        # Compute scaled dot-product attention
         attn_scores = torch.matmul(query, key.transpose(-1, -2))  # (batch, num_heads, seq_len, seq_len)
         attn_scores = attn_scores / (float(self.head_dim) ** 0.5)
 
         # Inject emotion bias
-        # Get bias from adapter (shape: (batch, num_heads, head_dim))
-        emotion_bias = self.emotion_adapter(self.global_emotion_state)
-        # Compute a bias score: dot product between query and emotion_bias.
-        # query: (batch, num_heads, seq_len, head_dim)
-        # emotion_bias: (batch, num_heads, head_dim) -> unsqueeze seq_len dimension.
-        bias_score = (query * emotion_bias.unsqueeze(2)).sum(dim=-1)  # (batch, num_heads, seq_len)
-        # Expand bias_score to add to attn_scores along the key dimension.
-        attn_scores = attn_scores + bias_score.unsqueeze(-1)
+        # emotion_bias shape: (batch, num_heads, head_dim)
+        # compute bias_score as dot(query, emotion_bias)
+        emotion_bias = self.emotion_adapter(self.global_emotion_state)  # shape: (batch, num_heads, head_dim)
+        bias_score   = (query * emotion_bias.unsqueeze(2)).sum(dim=-1)  # (batch, num_heads, seq_len)
+        # Expand bias_score along the key dimension
+        attn_scores  = attn_scores + bias_score.unsqueeze(-1)
 
+        # Apply attention mask
         if attention_mask is not None:
             attn_scores = attn_scores + attention_mask
 
+        # Softmax
         attn_probs = nn.functional.softmax(attn_scores, dim=-1)
+        # Weighted sum of value
         attn_output = torch.matmul(attn_probs, value)
+        # Merge heads
         attn_output = self._merge_heads(attn_output, self.num_heads, self.head_dim)
-        attn_output = self.out(attn_output)
+        # Final projection
+        attn_output = self.c_proj(attn_output)
 
-        outputs = (attn_output, attn_probs) if output_attentions else (attn_output,)
+        # Return correct tuple
+        if use_cache and output_attentions:
+            outputs = (attn_output, present, attn_probs)
+        elif use_cache:
+            outputs = (attn_output, present)
+        elif output_attentions:
+            outputs = (attn_output, attn_probs)
+        else:
+            outputs = (attn_output,)
+
         return outputs
 
 
 # ------------------------------
-# 5. Emotion-Aware GPT-Neo Model
+# 5. Emotion-Aware GPT-2 Model
 # ------------------------------
-class EmotionAwareGPTNeoLMHeadModel(GPTNeoForCausalLM):
+class EmotionAwareGPT2LMHeadModel(GPT2LMHeadModel):
     """
-    A GPT-Neo model that integrates:
+    A GPT-2 model that integrates:
       - Latent emotion extraction,
       - Recurrent emotion state updating,
       - And emotion injection into attention.
@@ -166,7 +202,7 @@ class EmotionAwareGPTNeoLMHeadModel(GPTNeoForCausalLM):
 
         # Replace attention modules in each transformer block with our emotion-aware version.
         for block in self.transformer.h:
-            block.attn = EmotionAwareGPTNeoAttention(config, self.emotion_adapter, self.get_global_emotion_state())
+            block.attn = EmotionAwareGPT2Attention(config, self.emotion_adapter, self.get_global_emotion_state())
 
     def get_global_emotion_state(self):
         # For batch size 1: if not set, return a zero vector.
@@ -191,30 +227,36 @@ class EmotionAwareGPTNeoLMHeadModel(GPTNeoForCausalLM):
 # ------------------------------
 # 6. Instantiate Components and Model
 # ------------------------------
-# For local testing, we'll use the smaller GPT-Neo model.
-model_name = "EleutherAI/gpt-neo-125M"  # Change to "EleutherAI/gpt-neo-2.7B" if resources allow.
+model_name = "gpt2"  # Using base GPT-2.
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = GPTNeoForCausalLM.from_pretrained(model_name)
-model.to(device)
-model.eval()
+# Load the base GPT-2 model.
+base_model = GPT2LMHeadModel.from_pretrained(model_name)
+base_model.to(device)
+base_model.eval()
 
 # Get configuration details.
-config = model.config
-hidden_dim = config.hidden_size
-num_heads = config.num_attention_heads
-head_dim = hidden_dim // num_heads
+config = base_model.config
+hidden_dim = config.hidden_size  # typically 768 for GPT-2
+num_heads = config.num_attention_heads  # typically 12 for GPT-2
+head_dim = hidden_dim // num_heads  # typically 64 for GPT-2
 
 # Instantiate our emotion modules.
 emotion_extractor = AuxiliaryEmotionExtractor(hidden_dim, EMOTION_DIM).to(device)
 emotion_updater = EmotionStateUpdater(EMOTION_DIM).to(device)
 emotion_adapter = EmotionAttentionAdapter(EMOTION_DIM, num_heads, head_dim, adapter_dim=32).to(device)
 
-# Create our Emotion-Aware GPT-Neo model.
-emotion_aware_model = EmotionAwareGPTNeoLMHeadModel(config, emotion_adapter, emotion_extractor, emotion_updater)
-# Load the GPT-Neo weights into our custom model.
-emotion_aware_model.load_state_dict(model.state_dict(), strict=False)
+# Create our Emotion-Aware GPT-2 model.
+emotion_aware_model = EmotionAwareGPT2LMHeadModel(config, emotion_adapter, emotion_extractor, emotion_updater)
 emotion_aware_model.to(device)
 emotion_aware_model.eval()
+
+# Copy only the matching parameters from the pre-trained base model.
+base_state_dict = base_model.state_dict()
+custom_state_dict = emotion_aware_model.state_dict()
+for name, param in base_state_dict.items():
+    if name in custom_state_dict and param.size() == custom_state_dict[name].size():
+        custom_state_dict[name] = param
+emotion_aware_model.load_state_dict(custom_state_dict, strict=False)
 
 
 # ------------------------------
@@ -260,7 +302,7 @@ def generate_text_with_emotion(model, prompt, max_new_tokens=100, temperature=1.
 # 8. Chat Loop Demo
 # ------------------------------
 def chat():
-    print("Welcome to the Emotion-Aware GPT-Neo Chatbot!")
+    print("Welcome to the Emotion-Aware GPT-2 Chatbot!")
     print("Type 'quit' to exit.\n")
     conversation_history = ""
 
