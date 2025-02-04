@@ -149,7 +149,7 @@ def save_to_jsonl(samples, output_file):
 # -------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate synthetic training data for emotion-aware AI.")
-    parser.add_argument("--num_samples", type=int, default=5, help="Number of samples to generate.")
+    parser.add_argument("--num_samples", type=int, default=20, help="Number of samples to generate.")
     parser.add_argument("--output", type=str, default=OUTPUT_FILE, help="Output JSONL file.")
     args = parser.parse_args()
 
