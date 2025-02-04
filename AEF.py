@@ -1,227 +1,291 @@
+#!/usr/bin/env python
+# emotion_aware_gptneo.py
+
 import torch
 import torch.nn as nn
-from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments, DataCollatorForLanguageModeling
-from datasets import load_dataset
+import torch.nn.functional as F
 import numpy as np
-from torch.nn import functional as F
+import time
 
-# 1. Setup
+from transformers import AutoTokenizer, GPTNeoForCausalLM, GPTNeoConfig
+# Import GPTNeoAttention from the GPT-Neo model implementation
+# (This import path may change with versions; adjust if necessary.)
+from transformers.models.gpt_neo.modeling_gpt_neo import GPTNeoAttention
+
+# ------------------------------
+# 0. Setup and Global Variables
+# ------------------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.manual_seed(42)
 np.random.seed(42)
 
-model_name = "distilgpt2"  # Or any compatible model
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-if tokenizer.pad_token is None:
-    tokenizer.pad_token = tokenizer.eos_token
+# Define emotion dimensions and names (using a consolidated eight-emotion set)
+EMOTION_DIM = 8
+EMOTION_NAMES = ["joy", "trust", "fear", "surprise", "sadness", "disgust", "anger", "anticipation"]
 
-base_model = AutoModelForCausalLM.from_pretrained(model_name)
-base_model.config.output_hidden_states = True
-base_model.to(device)
-base_model.eval()
 
-# 2. Emotion State Management
-class EmotionState:
-    def __init__(self, emotion_dim=4):
-        self.emotion_vector = torch.zeros(1, emotion_dim).to(device)
-        self.emotion_names = ["joy", "sadness", "anger", "fear"]
+# ------------------------------
+# 1. Auxiliary Emotion Extractor
+# ------------------------------
+class AuxiliaryEmotionExtractor(nn.Module):
+    """
+    Extracts a latent emotion vector from hidden states.
+    For simplicity, we average pool the hidden states over the sequence dimension
+    and pass them through an MLP (with sigmoid activation) to get values in [0,1].
+    """
 
-    def update(self, user_input):
-        self.emotion_vector.fill_(0.0)  # Reset emotions for each input
-        user_input = user_input.lower()
-
-        if "happy" in user_input or "excited" in user_input or "joyful" in user_input:
-            self.emotion_vector[0, self.emotion_names.index("joy")] = 1.0
-        if "sad" in user_input or "unhappy" in user_input or "depressed" in user_input:
-            self.emotion_vector[0, self.emotion_names.index("sadness")] = 1.0
-        if "angry" in user_input or "furious" in user_input or "mad" in user_input:
-            self.emotion_vector[0, self.emotion_names.index("anger")] = 1.0
-        if "scared" in user_input or "frightened" in user_input or "terrified" in user_input or "fear" in user_input:
-            self.emotion_vector[0, self.emotion_names.index("fear")] = 1.0
-
-        self.emotion_vector = torch.clamp(self.emotion_vector, 0, 1)
-
-    def get_vector(self):
-        return self.emotion_vector
-
-    def __str__(self):
-        # Squeeze the tensor and convert to a list for display
-        emotion_list = self.emotion_vector.squeeze(0).tolist()
-        emotion_str = ", ".join([f"{name}: {val:.2f}" for name, val in zip(self.emotion_names, emotion_list)])
-        return f"[{emotion_str}]"
-
-emotion_state = EmotionState()
-
-# 3. Emotion Adapter (LORA-like)
-class EmotionAdapter(nn.Module):
-    def __init__(self, emotion_dim, hidden_dim, adapter_dim=128):
+    def __init__(self, hidden_dim, emotion_dim):
         super().__init__()
-        self.down_proj = nn.Linear(emotion_dim, adapter_dim)
-        self.up_proj = nn.Linear(adapter_dim, hidden_dim)
-        self.scale = nn.Parameter(torch.ones(1))
+        self.fc = nn.Linear(hidden_dim, emotion_dim)
+
+    def forward(self, hidden_states):
+        # hidden_states: (batch, seq_len, hidden_dim)
+        pooled = hidden_states.mean(dim=1)  # (batch, hidden_dim)
+        emotion = torch.sigmoid(self.fc(pooled))  # (batch, emotion_dim)
+        return emotion
+
+
+# ------------------------------
+# 2. Emotion State Updater (Recurrent)
+# ------------------------------
+class EmotionStateUpdater(nn.Module):
+    """
+    Maintains a global emotion state via a GRUCell.
+    """
+
+    def __init__(self, emotion_dim):
+        super().__init__()
+        self.gru = nn.GRUCell(emotion_dim, emotion_dim)
+        self.state = None  # will be (batch, emotion_dim)
+        self.emotion_dim = emotion_dim
+
+    def forward(self, new_emotion):
+        # new_emotion: (batch, emotion_dim)
+        if self.state is None:
+            self.state = new_emotion
+        else:
+            self.state = self.gru(new_emotion, self.state)
+        return self.state
+
+
+# ------------------------------
+# 3. Emotion Attention Adapter (LoRA-like)
+# ------------------------------
+class EmotionAttentionAdapter(nn.Module):
+    """
+    Projects the emotion vector into a bias for each attention head.
+    """
+
+    def __init__(self, emotion_dim, num_heads, head_dim, adapter_dim=32):
+        super().__init__()
+        self.down_proj = nn.Linear(emotion_dim, num_heads * adapter_dim)
+        self.activation = nn.ReLU()
+        self.up_proj = nn.Linear(adapter_dim, head_dim)
+        self.num_heads = num_heads
 
     def forward(self, emotion_vector):
-        down = self.down_proj(emotion_vector)
-        up = self.up_proj(down)
-        return up * self.scale
+        # emotion_vector: (batch, emotion_dim)
+        x = self.down_proj(emotion_vector)  # shape: (batch, num_heads * adapter_dim)
+        x = self.activation(x)
+        x = x.view(-1, self.num_heads, -1)  # (batch, num_heads, adapter_dim)
+        bias = self.up_proj(x)  # (batch, num_heads, head_dim)
+        return bias
 
-emotion_adapter = EmotionAdapter(4, base_model.config.n_embd).to(device)
 
-# 4. Model with Emotion Prediction Head
-class EmotionAwareModel(nn.Module):
-    def __init__(self, base_model, emotion_adapter, emotion_dim=4):
-        super().__init__()
-        self.base_model = base_model
+# ------------------------------
+# 4. Custom Attention with Emotion Injection for GPT-Neo
+# ------------------------------
+class EmotionAwareGPTNeoAttention(GPTNeoAttention):
+    """
+    Subclass GPTNeoAttention to inject an emotion-derived bias into the attention logits.
+    """
+
+    def __init__(self, config, emotion_adapter, global_emotion_state):
+        super().__init__(config)
         self.emotion_adapter = emotion_adapter
-        self.emotion_head = nn.Linear(base_model.config.n_embd, emotion_dim)
+        # global_emotion_state: a tensor (batch, emotion_dim); updated externally.
+        self.global_emotion_state = global_emotion_state
 
-    def forward(self, input_ids=None, attention_mask=None, labels=None, emotion_labels=None, **kwargs):
-        # Use provided emotion_labels or create zeros for inference.
-        if emotion_labels is not None:
-            emotion_vector = emotion_labels  # Expected shape: (batch, 4)
+    def forward(self, hidden_states, layer_past=None, attention_mask=None, head_mask=None, use_cache=False, output_attentions=False):
+        # Follow GPT-Neo attention: compute query, key, value
+        # The original GPT-Neo attention module computes these via its internal linear layers.
+        # For simplicity, we call the parent method to get the initial attention logits.
+        # However, we then inject our emotion bias.
+
+        # Compute query, key, value using GPT-Neo internals
+        # (This is based on GPTNeoAttention implementation; adjust if necessary.)
+        query = self.query(hidden_states)  # shape: (batch, seq_len, num_heads * head_dim)
+        key = self.key(hidden_states)
+        value = self.value(hidden_states)
+        query = self._split_heads(query, self.num_heads, self.head_dim)  # (batch, num_heads, seq_len, head_dim)
+        key = self._split_heads(key, self.num_heads, self.head_dim)
+        value = self._split_heads(value, self.num_heads, self.head_dim)
+
+        # Standard scaled dot-product attention logits
+        attn_scores = torch.matmul(query, key.transpose(-1, -2))  # (batch, num_heads, seq_len, seq_len)
+        attn_scores = attn_scores / (float(self.head_dim) ** 0.5)
+
+        # Inject emotion bias
+        # Get bias from adapter (shape: (batch, num_heads, head_dim))
+        emotion_bias = self.emotion_adapter(self.global_emotion_state)
+        # Compute a bias score: dot product between query and emotion_bias.
+        # query: (batch, num_heads, seq_len, head_dim)
+        # emotion_bias: (batch, num_heads, head_dim) -> unsqueeze seq_len dimension.
+        bias_score = (query * emotion_bias.unsqueeze(2)).sum(dim=-1)  # (batch, num_heads, seq_len)
+        # Expand bias_score to add to attn_scores along the key dimension.
+        attn_scores = attn_scores + bias_score.unsqueeze(-1)
+
+        if attention_mask is not None:
+            attn_scores = attn_scores + attention_mask
+
+        attn_probs = nn.functional.softmax(attn_scores, dim=-1)
+        attn_output = torch.matmul(attn_probs, value)
+        attn_output = self._merge_heads(attn_output, self.num_heads, self.head_dim)
+        attn_output = self.out(attn_output)
+
+        outputs = (attn_output, attn_probs) if output_attentions else (attn_output,)
+        return outputs
+
+
+# ------------------------------
+# 5. Emotion-Aware GPT-Neo Model
+# ------------------------------
+class EmotionAwareGPTNeoLMHeadModel(GPTNeoForCausalLM):
+    """
+    A GPT-Neo model that integrates:
+      - Latent emotion extraction,
+      - Recurrent emotion state updating,
+      - And emotion injection into attention.
+    """
+
+    def __init__(self, config, emotion_adapter, emotion_extractor, emotion_updater):
+        super().__init__(config)
+        self.emotion_adapter = emotion_adapter
+        self.emotion_extractor = emotion_extractor
+        self.emotion_updater = emotion_updater
+
+        # Replace attention modules in each transformer block with our emotion-aware version.
+        for block in self.transformer.h:
+            block.attn = EmotionAwareGPTNeoAttention(config, self.emotion_adapter, self.get_global_emotion_state())
+
+    def get_global_emotion_state(self):
+        # For batch size 1: if not set, return a zero vector.
+        if self.emotion_updater.state is None:
+            return torch.zeros(1, self.emotion_updater.emotion_dim).to(device)
+        return self.emotion_updater.state
+
+    def update_emotion_state(self, hidden_states):
+        """
+        Update the global emotion state based on hidden states from the prompt.
+        """
+        # Extract latent emotion from hidden states.
+        emotion_vector = self.emotion_extractor(hidden_states)  # (batch, emotion_dim)
+        updated_state = self.emotion_updater(emotion_vector)
+        # Propagate updated state to all attention modules.
+        for block in self.transformer.h:
+            if hasattr(block.attn, 'global_emotion_state'):
+                block.attn.global_emotion_state = updated_state
+        return updated_state
+
+
+# ------------------------------
+# 6. Instantiate Components and Model
+# ------------------------------
+# For local testing, we'll use the smaller GPT-Neo model.
+model_name = "EleutherAI/gpt-neo-125M"  # Change to "EleutherAI/gpt-neo-2.7B" if resources allow.
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = GPTNeoForCausalLM.from_pretrained(model_name)
+model.to(device)
+model.eval()
+
+# Get configuration details.
+config = model.config
+hidden_dim = config.hidden_size
+num_heads = config.num_attention_heads
+head_dim = hidden_dim // num_heads
+
+# Instantiate our emotion modules.
+emotion_extractor = AuxiliaryEmotionExtractor(hidden_dim, EMOTION_DIM).to(device)
+emotion_updater = EmotionStateUpdater(EMOTION_DIM).to(device)
+emotion_adapter = EmotionAttentionAdapter(EMOTION_DIM, num_heads, head_dim, adapter_dim=32).to(device)
+
+# Create our Emotion-Aware GPT-Neo model.
+emotion_aware_model = EmotionAwareGPTNeoLMHeadModel(config, emotion_adapter, emotion_extractor, emotion_updater)
+# Load the GPT-Neo weights into our custom model.
+emotion_aware_model.load_state_dict(model.state_dict(), strict=False)
+emotion_aware_model.to(device)
+emotion_aware_model.eval()
+
+
+# ------------------------------
+# 7. Custom Generation Loop
+# ------------------------------
+def custom_generate(model, input_ids, attention_mask=None, max_new_tokens=50, temperature=1.0, do_sample=False):
+    """
+    Simple token-by-token generation loop.
+    Before generation, we update the global emotion state based on the input.
+    """
+    with torch.no_grad():
+        outputs = model.transformer(input_ids, attention_mask=attention_mask)
+    hidden_states = outputs.last_hidden_state  # (batch, seq_len, hidden_dim)
+    model.update_emotion_state(hidden_states)
+
+    generated = input_ids
+    for _ in range(max_new_tokens):
+        outputs = model(generated, attention_mask=attention_mask)
+        logits = outputs.logits  # (batch, seq_len, vocab_size)
+        next_token_logits = logits[:, -1, :] / temperature
+        if do_sample:
+            probs = F.softmax(next_token_logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
         else:
-            emotion_vector = torch.zeros(input_ids.size(0), 4).to(device)
-
-        outputs = self.base_model(input_ids, attention_mask=attention_mask, labels=labels, **kwargs)
-
-        # Use the last element of hidden_states as the final hidden state
-        raw_hidden_state = outputs.hidden_states[-1]
-        seq_length = raw_hidden_state.size(1)
-
-        adapter_output = self.emotion_adapter(emotion_vector)  # Shape: (batch, hidden_dim)
-        # Expand adapter_output to match the sequence length
-        adapter_output_expanded = adapter_output.unsqueeze(1).expand(-1, seq_length, -1)
-        hidden_states = raw_hidden_state + adapter_output_expanded
-
-        # Compute emotion prediction using the last token's hidden state
-        emotion_logits = self.emotion_head(hidden_states[:, -1, :])
-        loss = outputs.loss
-        if emotion_labels is not None:
-            emotion_loss = F.mse_loss(emotion_logits, emotion_labels)
-            loss = loss + 0.5 * emotion_loss
-
-        # Return a dictionary containing the loss and logits.
-        return {"loss": loss, "logits": outputs.logits, "hidden_states": hidden_states}
-
-    def generate(self, input_ids=None, attention_mask=None, emotion_vector=None, **kwargs):
-        """
-        For generation, we modify the input embeddings by adding the emotion adapter's output.
-        """
-        if emotion_vector is None:
-            emotion_vector = torch.zeros(input_ids.size(0), 4).to(device)
-        if emotion_vector.ndim == 1:
-            emotion_vector = emotion_vector.unsqueeze(0)
-
-        # Get the input embeddings from the base model's embedding layer
-        input_embeds = self.base_model.transformer.wte(input_ids)  # (batch, seq_len, hidden_dim)
-        adapter_output = self.emotion_adapter(emotion_vector)       # (batch, hidden_dim)
-        # Expand adapter output across the sequence length
-        adapter_output_expanded = adapter_output.unsqueeze(1).expand(-1, input_embeds.size(1), -1)
-        modified_input_embeds = input_embeds + adapter_output_expanded
-
-        # Call generate with modified input embeddings.
-        return self.base_model.generate(
-            attention_mask=attention_mask,
-            input_embeds=modified_input_embeds,
-            **kwargs
-        )
-
-# 5. Data Preparation
-dataset = load_dataset("wikitext", "wikitext-2-raw-v1")  # Example, replace with your dataset
-train_dataset = dataset["train"].select(range(500))  # Reduced for demonstration
-val_dataset = dataset["validation"].select(range(100))  # Reduced for demonstration
-
-def tokenize_function(examples):
-    return tokenizer(examples["text"], truncation=True, padding="max_length", max_length=128)
-
-tokenized_train = train_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
-tokenized_val = val_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
-
-# Dummy emotion labels (replace with your actual labels)
-def add_emotion_labels(example):
-    # Create random emotion labels; in practice, use your own logic.
-    example['emotion_labels'] = np.random.rand(4).tolist()
-    return example
-
-tokenized_train = tokenized_train.map(add_emotion_labels)
-tokenized_val = tokenized_val.map(add_emotion_labels)
-
-data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
-
-# 6. Training
-emotion_aware_model = EmotionAwareModel(base_model, emotion_adapter).to(device)
-
-training_args = TrainingArguments(
-    output_dir="./emotion_finetuned",
-    num_train_epochs=3,               # Adjust as needed
-    per_device_train_batch_size=4,    # Adjust as needed
-    per_device_eval_batch_size=4,     # Adjust as needed
-    learning_rate=5e-5,               # Adjust as needed
-    weight_decay=0.01,                # Adjust as needed
-    fp16=False,                       # Set to True if you have a compatible GPU
-    save_safetensors=False            # Disable safetensors saving to avoid shared memory issues
-    # ... other training arguments ...
-)
+            next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+        generated = torch.cat((generated, next_token), dim=1)
+        if (next_token == tokenizer.eos_token_id).all():
+            break
+    return generated
 
 
-trainer = Trainer(
-    model=emotion_aware_model,
-    args=training_args,
-    train_dataset=tokenized_train,
-    eval_dataset=tokenized_val,
-    data_collator=data_collator,
-)
+def generate_text_with_emotion(model, prompt, max_new_tokens=100, temperature=1.0, do_sample=False):
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+    generated_ids = custom_generate(model, input_ids=inputs["input_ids"],
+                                    attention_mask=inputs.get("attention_mask", None),
+                                    max_new_tokens=max_new_tokens,
+                                    temperature=temperature,
+                                    do_sample=do_sample)
+    return tokenizer.decode(generated_ids[0], skip_special_tokens=True)
 
-trainer.train()
 
-# 7. Inference (Modified to use the trained model and emotion state)
-def generate_text_with_emotion(model, prompt, emotion_vector, max_new_tokens=150, do_sample=True, top_p=0.95, temperature=1.0):
-    inputs = tokenizer(prompt, return_tensors="pt", padding=True).to(device)
-
-    if emotion_vector.ndim == 1:
-        emotion_vector = emotion_vector.unsqueeze(0)
-
-    outputs = model.generate(
-        input_ids=inputs["input_ids"],
-        attention_mask=inputs["attention_mask"],
-        max_new_tokens=max_new_tokens,
-        do_sample=do_sample,
-        top_p=top_p,
-        temperature=temperature,
-        eos_token_id=tokenizer.eos_token_id,
-        pad_token_id=tokenizer.pad_token_id,
-        emotion_vector=emotion_vector
-    )
-    return tokenizer.decode(outputs[0], skip_special_tokens=True)
-
+# ------------------------------
+# 8. Chat Loop Demo
+# ------------------------------
 def chat():
-    print("Welcome to the Emotion-Integrated Chatbot!")
+    print("Welcome to the Emotion-Aware GPT-Neo Chatbot!")
     print("Type 'quit' to exit.\n")
     conversation_history = ""
 
     while True:
         user_input = input("User: ")
-        if user_input.lower().strip() == "quit":
+        if user_input.strip().lower() == "quit":
             print("Goodbye!")
             break
 
-        emotion_state.update(user_input)  # Update emotion based on input
-        print("Current Emotion State:", emotion_state)
-
         conversation_history += f"User: {user_input}\n"
         prompt_text = conversation_history + "Assistant:"
+        response = generate_text_with_emotion(emotion_aware_model, prompt_text, max_new_tokens=100, temperature=1.2, do_sample=True)
 
-        # Use the trained model for inference
-        response = generate_text_with_emotion(emotion_aware_model, prompt_text, emotion_state.get_vector(), max_new_tokens=150)
-
-        # Extract assistant response (split on the prompt token if necessary)
+        # Extract assistant response after "Assistant:" if possible.
         if "Assistant:" in response:
             assistant_response = response.split("Assistant:")[-1].strip()
         else:
             assistant_response = response.strip()
 
         conversation_history += f"Assistant: {assistant_response}\n"
+        current_emotion = emotion_aware_model.get_global_emotion_state().squeeze(0).detach().cpu().numpy()
+        emotion_str = ", ".join([f"{name}: {val:.2f}" for name, val in zip(EMOTION_NAMES, current_emotion)])
+        print("Current Emotion State:", emotion_str)
         print("Assistant:", assistant_response, "\n")
+
 
 if __name__ == "__main__":
     chat()
