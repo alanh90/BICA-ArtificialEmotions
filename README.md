@@ -1,4 +1,12 @@
-# Artificial Emotions 
+# Artificial Emotion Framework (AEF)
+
+*A potential integral component of the Bicameral AGI Project: Designing Affect for Intelligent Systems*
+
+![GitHub commit activity](https://img.shields.io/github/commit-activity/m/alanh90/BICA-ArtificialEmotions)
+![GitHub last commit](https://img.shields.io/github/last-commit/alanh90/BICA-ArtificialEmotions)
+![GitHub License](https://img.shields.io/github/license/alanh90/BICA-ArtificialEmotions)
+
+<div align="center"><img src="media/artificial_emotions.png" alt="Hungry Matrix Cover"></div>
 
 This repository implements an artificial emotion and semantic memory system integrated into a Flask web application, utilizing OpenAI's API and sentence embeddings for semantic memory retrieval.
 
