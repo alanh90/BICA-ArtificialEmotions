@@ -10,6 +10,13 @@
 
 This repository implements an artificial emotion and semantic memory system integrated into a Flask web application, utilizing OpenAI's API and sentence embeddings for semantic memory retrieval.
 
+<div align="center">
+  <a href="https://youtu.be/BUyeVTl9LZs">
+    <img src="https://img.youtube.com/vi/BUyeVTl9LZs/maxresdefault.jpg" alt="Artificial Dreams Demo Video" width="600">
+  </a>
+  <p>Click the image to watch the demo on YouTube</p>
+</div>
+
 ## Overview
 
 The system consists of two main components:
