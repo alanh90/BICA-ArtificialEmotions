@@ -23,6 +23,8 @@ Simulates an evolving emotional state with dynamic intensity influenced by user 
 - **Micro-fluctuations and Noise:** Adds subtle, randomized variations for realistic emotional states.
 - **Thought Generation:** Background generation of contextually influenced thoughts using the OpenAI API, which subtly affect emotional states.
 - **Emotion-driven Responses:** User interactions affect and are influenced by the current emotional state, producing naturally varying responses.
+- 
+<div align="center"><img src="media/emotionTracking.png" alt="Emotions"></div>
 
 ### 2. Memory System
 
