@@ -5,20 +5,33 @@ import threading
 import random
 import json
 import os
+from dotenv import load_dotenv
+from openai import OpenAI, AuthenticationError
 import numpy as np
 from datetime import datetime
-from openai import OpenAI
 
 app = Flask(__name__)
 
-# Initialize OpenAI client
+# Initialize OpenAI client, could use any good AI honestly
 
-OPENAI_API_KEY = "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"
-client = OpenAI(api_key=OPENAI_API_KEY)
+load_dotenv()
+
+# get api key from environment
+api_key = os.environ["OPENAI_API_KEY"]
 
 
+# create OpenAI client
+def create_client(api_key):
+    try:
+        client = OpenAI(api_key=api_key)
+        client.models.list()
+        return client
+    except AuthenticationError:
+        print("Incorrect API")
+    return None
 
 
+client = create_client(api_key)
 
 
 # ===========================================================================================
