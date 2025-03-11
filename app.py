@@ -13,7 +13,6 @@ from datetime import datetime
 app = Flask(__name__)
 
 # Initialize OpenAI client, could use any good AI honestly
-
 load_dotenv()
 
 # get api key from environment
@@ -57,15 +56,18 @@ class EmotionalSystem:
         self.conversation = []
         self.emotion_history = [self.emotions.copy()]
 
-        # System parameters
-        self.decay_rate = 0.98  # Natural emotional decay
-        self.noise_magnitude = 0.005  # Background emotional noise
-        self.thought_frequency = 10  # Seconds between thoughts (average)
+        # System parameters - UPDATED FOR MORE FLUIDITY
+        self.decay_rate = 0.95  # Faster decay (was 0.98)
+        self.noise_magnitude = 0.015  # More noise (was 0.005)
+        self.thought_frequency = 7  # More frequent thoughts (was 10)
+        self.update_frequency = 0.2  # Update emotion history more often (was 1.0)
+        self.micro_update_count = 0  # Counter for micro-updates
 
         # Start background processing
         self.running = True
         self.last_thought_time = time.time()
         self.last_update_time = time.time()
+        self.last_micro_time = time.time()
         self.background_thread = threading.Thread(target=self._background_process)
         self.background_thread.daemon = True
         self.background_thread.start()
@@ -78,7 +80,7 @@ class EmotionalSystem:
             # Apply natural decay
             self._apply_decay(current_time - self.last_update_time)
 
-            # Apply random noise to emotions
+            # Apply random noise to emotions - more frequent but smaller
             self._apply_noise()
 
             # Generate periodic thoughts
@@ -92,15 +94,20 @@ class EmotionalSystem:
                 self._generate_thought(current_time)
                 self.last_thought_time = current_time
 
-            # Record emotion history
-            if current_time - self.last_update_time > 1.0:  # Every second
+            # Add micro-fluctuations to selected emotions for more natural movement
+            if current_time - self.last_micro_time > 0.5:  # Every half second
+                self._apply_micro_fluctuations()
+                self.last_micro_time = current_time
+
+            # Record emotion history more frequently
+            if current_time - self.last_update_time > self.update_frequency:
                 self.emotion_history.append(self.emotions.copy())
                 if len(self.emotion_history) > 300:  # 5 minutes worth
                     self.emotion_history = self.emotion_history[-300:]
                 self.last_update_time = current_time
 
-            # Sleep briefly
-            time.sleep(0.1)
+            # Sleep briefly - shorter sleep for more responsive updates
+            time.sleep(0.05)  # Was 0.1
 
     def _apply_decay(self, elapsed_time):
         """Decay emotions gradually toward 0"""
@@ -109,22 +116,43 @@ class EmotionalSystem:
 
         for emotion in self.emotions:
             # More intense emotions decay more slowly
-            intensity_factor = 0.2 + (self.emotions[emotion] * 0.8)  # 0.2-1.0
+            intensity_factor = 0.2 + (self.emotions[emotion] * 0.8)
             adjusted_decay = decay_factor ** intensity_factor
 
-            # Apply decay
-            self.emotions[emotion] *= adjusted_decay
+            # Apply decay with small random variation for more natural movement
+            variation = 1.0 + random.uniform(-0.05, 0.05)  # ±5% variation
+            self.emotions[emotion] *= adjusted_decay * variation
 
     def _apply_noise(self):
         """Apply small random changes to emotions"""
         for emotion in self.emotions:
-            # Less noise for more intense emotions
+            # Dynamic noise scale - less predictable
             intensity = self.emotions[emotion]
-            noise_scale = self.noise_magnitude * (1.0 - intensity * 0.8)
+            base_noise = self.noise_magnitude * (1.0 - intensity * 0.7)  # Less reduction at high intensity
+
+            # Random fluctuation in noise amount
+            noise_scale = base_noise * random.uniform(0.5, 1.5)
 
             # Apply noise
             noise = random.uniform(-noise_scale, noise_scale)
             self.emotions[emotion] = max(0.0, min(1.0, self.emotions[emotion] + noise))
+
+    def _apply_micro_fluctuations(self):
+        """Apply tiny fluctuations to create more natural emotion movement"""
+        # Pick 2-3 random emotions to adjust
+        emotions_to_adjust = random.sample(list(self.emotions.keys()), random.randint(2, 3))
+
+        for emotion in emotions_to_adjust:
+            # Very small adjustments
+            micro_change = random.uniform(-0.03, 0.03)
+
+            # Apply with preference toward the middle range (more movement in neutral states)
+            distance_from_mid = abs(self.emotions[emotion] - 0.5)
+            if distance_from_mid > 0.3:  # Emotions far from neutral move less
+                micro_change *= (1.0 - distance_from_mid)
+
+            # Apply the micro-fluctuation
+            self.emotions[emotion] = max(0.0, min(1.0, self.emotions[emotion] + micro_change))
 
     def _generate_thought(self, timestamp):
         """Generate a background thought using OpenAI API"""
