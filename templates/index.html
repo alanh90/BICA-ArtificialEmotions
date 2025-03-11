@@ -1,0 +1,98 @@
+# templates/index.html
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Emotional AI</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script defer src="{{ url_for('static', filename='js/app.js') }}"></script>
+</head>
+<body>
+    <div class="app-container">
+        <header>
+            <h1>Emotional AI</h1>
+            <div class="controls">
+                <button id="reset-emotions" class="btn">Reset Emotions</button>
+                <select id="emotion-speed" class="select">
+                    <option value="1">Normal Speed</option>
+                    <option value="2">Fast</option>
+                    <option value="0.5">Slow</option>
+                </select>
+            </div>
+        </header>
+
+        <main>
+            <div class="chat-container">
+                <div class="chat-messages" id="chat-messages">
+                    <!-- Messages will be added here dynamically -->
+                </div>
+                <div class="chat-input-container">
+                    <textarea id="user-input" placeholder="Type your message here..." rows="3"></textarea>
+                    <button id="send-button" class="btn btn-primary">Send</button>
+                </div>
+            </div>
+
+            <div class="emotion-container">
+                <h2>Emotional State</h2>
+                <div class="emotion-bars" id="emotion-bars">
+                    <!-- Emotion bars will be added here dynamically -->
+                </div>
+
+                <div class="thoughts-container">
+                    <h3>Background Thoughts</h3>
+                    <div class="thoughts" id="thoughts">
+                        <!-- Thought bubbles will appear here -->
+                    </div>
+                </div>
+
+                <div class="memories-container">
+                    <h3>Emotional Memories</h3>
+                    <div class="memories" id="memories">
+                        <!-- Memory indicators will appear here -->
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <div class="emotion-graph-container">
+            <h3>Emotion Dynamics</h3>
+            <canvas id="emotion-graph"></canvas>
+        </div>
+    </div>
+
+    <!-- Thought bubble template -->
+    <template id="thought-template">
+        <div class="thought-bubble">
+            <p class="thought-text"></p>
+        </div>
+    </template>
+
+    <!-- Memory template -->
+    <template id="memory-template">
+        <div class="memory-item">
+            <div class="memory-icon"></div>
+            <div class="memory-text"></div>
+        </div>
+    </template>
+
+    <!-- Message templates -->
+    <template id="user-message-template">
+        <div class="message user-message">
+            <div class="message-content"></div>
+        </div>
+    </template>
+
+    <template id="assistant-message-template">
+        <div class="message assistant-message">
+            <div class="message-content"></div>
+            <div class="message-emotion-badge"></div>
+        </div>
+    </template>
+
+    <!-- Load Chart.js for emotion dynamics visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</body>
+</html>

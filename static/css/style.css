@@ -1,0 +1,414 @@
+/* static/css/style.css */
+
+:root {
+    /* Base Colors */
+    --bg-primary: #121212;
+    --bg-secondary: #1e1e1e;
+    --text-primary: #ffffff;
+    --text-secondary: #b0b0b0;
+    --accent: #6200ee;
+    --accent-light: #bb86fc;
+    --error: #cf6679;
+    --border: #2a2a2a;
+
+    /* Emotion Colors (HSL for easy manipulation) */
+    --joy-color: hsl(60, 100%, 50%);
+    --sadness-color: hsl(240, 100%, 70%);
+    --anger-color: hsl(0, 100%, 50%);
+    --fear-color: hsl(270, 100%, 70%);
+    --surprise-color: hsl(180, 100%, 50%);
+    --trust-color: hsl(120, 100%, 40%);
+    --disgust-color: hsl(300, 100%, 30%);
+    --anticipation-color: hsl(40, 100%, 50%);
+
+    /* Sizing */
+    --header-height: 60px;
+    --emotion-width: 350px;
+    --emotion-bar-height: 24px;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Inter', sans-serif;
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.6;
+}
+
+.app-container {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* Header */
+header {
+    height: var(--header-height);
+    background-color: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 20px;
+    position: relative;
+}
+
+.controls {
+    display: flex;
+    gap: 10px;
+}
+
+/* Main content */
+main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+}
+
+/* Chat container */
+.chat-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--border);
+}
+
+.chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.chat-input-container {
+    padding: 15px;
+    background-color: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 10px;
+}
+
+#user-input {
+    flex: 1;
+    background-color: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-primary);
+    padding: 12px;
+    resize: none;
+    font-family: inherit;
+    font-size: 14px;
+}
+
+#user-input:focus {
+    outline: none;
+    border-color: var(--accent-light);
+}
+
+/* Messages */
+.message {
+    max-width: 80%;
+    padding: 12px 16px;
+    border-radius: 8px;
+    position: relative;
+    animation: fadeIn 0.3s ease-out;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.user-message {
+    align-self: flex-end;
+    background-color: var(--accent);
+    color: white;
+}
+
+.assistant-message {
+    align-self: flex-start;
+    background-color: var(--bg-secondary);
+    position: relative;
+}
+
+.message-content {
+    word-break: break-word;
+}
+
+.message-emotion-badge {
+    position: absolute;
+    top: -8px;
+    right: -8px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background-color: var(--accent-light);
+}
+
+/* Emotion container */
+.emotion-container {
+    width: var(--emotion-width);
+    background-color: var(--bg-secondary);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    padding: 20px;
+    overflow-y: auto;
+}
+
+.emotion-container h2 {
+    margin-bottom: 20px;
+    font-size: 20px;
+    font-weight: 600;
+}
+
+.emotion-bars {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin-bottom: 30px;
+}
+
+.emotion-bar-container {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.emotion-bar-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 14px;
+}
+
+.emotion-bar-track {
+    height: var(--emotion-bar-height);
+    background-color: var(--bg-primary);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+}
+
+.emotion-bar-progress {
+    height: 100%;
+    position: absolute;
+    left: 0;
+    top: 0;
+    transition: width 0.5s ease, background-color 0.5s ease;
+}
+
+/* Center marker for neutral point */
+.emotion-bar-track::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: 2px;
+    height: 100%;
+    background-color: rgba(255, 255, 255, 0.3);
+}
+
+/* Thoughts container */
+.thoughts-container {
+    margin-top: 20px;
+    margin-bottom: 30px;
+}
+
+.thoughts-container h3 {
+    margin-bottom: 15px;
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.thoughts {
+    min-height: 100px;
+    position: relative;
+}
+
+.thought-bubble {
+    background-color: var(--bg-primary);
+    border-radius: 18px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    position: relative;
+    animation: fadeInOut 8s ease-in-out;
+    max-width: 90%;
+}
+
+@keyframes fadeInOut {
+    0% { opacity: 0; transform: translateY(20px); }
+    10% { opacity: 1; transform: translateY(0); }
+    80% { opacity: 1; }
+    100% { opacity: 0; }
+}
+
+.thought-bubble::after {
+    content: '';
+    position: absolute;
+    bottom: -10px;
+    left: 20px;
+    width: 20px;
+    height: 20px;
+    background-color: var(--bg-primary);
+    transform: rotate(45deg);
+    z-index: -1;
+}
+
+.thought-text {
+    font-size: 14px;
+    font-style: italic;
+    color: var(--text-secondary);
+}
+
+/* Memories container */
+.memories-container {
+    margin-top: 20px;
+}
+
+.memories-container h3 {
+    margin-bottom: 15px;
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.memories {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.memory-item {
+    background-color: var(--bg-primary);
+    border-radius: 4px;
+    padding: 10px;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    max-width: 100%;
+    transition: all 0.3s ease;
+    cursor: pointer;
+}
+
+.memory-item:hover {
+    background-color: rgba(98, 0, 238, 0.2);
+}
+
+.memory-icon {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background-color: var(--accent-light);
+    flex-shrink: 0;
+}
+
+.memory-text {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-secondary);
+}
+
+/* Emotion graph */
+.emotion-graph-container {
+    height: 200px;
+    margin: 0 20px 20px;
+    background-color: var(--bg-secondary);
+    border-radius: 8px;
+    padding: 16px;
+    border: 1px solid var(--border);
+}
+
+.emotion-graph-container h3 {
+    margin-bottom: 10px;
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+#emotion-graph {
+    width: 100%;
+    height: calc(100% - 30px);
+}
+
+/* Buttons and form elements */
+.btn {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 16px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.btn:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+.btn-primary {
+    background-color: var(--accent);
+    border-color: var(--accent);
+}
+
+.btn-primary:hover {
+    background-color: var(--accent-light);
+}
+
+.select {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+/* Utility classes for emotion colors */
+.color-joy { color: var(--joy-color); }
+.color-sadness { color: var(--sadness-color); }
+.color-anger { color: var(--anger-color); }
+.color-fear { color: var(--fear-color); }
+.color-surprise { color: var(--surprise-color); }
+.color-trust { color: var(--trust-color); }
+.color-disgust { color: var(--disgust-color); }
+.color-anticipation { color: var(--anticipation-color); }
+
+.bg-joy { background-color: var(--joy-color); }
+.bg-sadness { background-color: var(--sadness-color); }
+.bg-anger { background-color: var(--anger-color); }
+.bg-fear { background-color: var(--fear-color); }
+.bg-surprise { background-color: var(--surprise-color); }
+.bg-trust { background-color: var(--trust-color); }
+.bg-disgust { background-color: var(--disgust-color); }
+.bg-anticipation { background-color: var(--anticipation-color); }
+
+/* Responsive adjustments */
+@media (max-width: 1000px) {
+    main {
+        flex-direction: column;
+    }
+
+    .emotion-container {
+        width: 100%;
+        border-left: none;
+        border-top: 1px solid var(--border);
+        overflow-y: visible;
+    }
+
+    .chat-container {
+        border-right: none;
+    }
+}
