@@ -1,4 +1,4 @@
-# Artificial Emotion Framework (AEF)
+# Artificial Emotion Framework
 
 *A potential integral component of the Bicameral AGI Project: Designing Affect for Intelligent Systems*
 
